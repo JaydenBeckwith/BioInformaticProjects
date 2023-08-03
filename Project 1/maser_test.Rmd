@@ -1,0 +1,89 @@
+---
+title: "maser_test"
+author: "jayden beckwith"
+date: "2023-05-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+BiocManager::install("maser")
+library(maser)
+```
+```{r}
+path <- system.file("extdata", file.path("MATS_output"),package = "maser")
+path
+?maser
+```
+
+#BLOOD
+```{r}
+mats_file <- "rMATS_blood"
+mats_file
+maser_test <- maser(mats_file, c("control","case"),ftype="JCEC")
+maser_test
+```
+
+```{r}
+head(summary(maser_test, type = "SE"))
+```
+
+```{r}
+top_blood <- topEvents(maser_test, fdr = 0.05, deltaPSI = 0.1)
+top_blood
+```
+```{r}
+maser::display(top_blood, "RI")
+```
+
+```{r}
+
+gtf_path <- "gencode.v39.annotation.gtf"
+library(rtracklayer)
+get_gtf <- rtracklayer::import.gff(gtf_path)
+
+HNRNP <- geneEvents(maser_test, geneS = "SNRPB", fdr=0.05, deltaPSI = 0.1)
+plotTranscripts(HNRNP, type = "RI", event_id = 5324, gtf = get_gtf, zoom = FALSE, show_PSI = TRUE)
+```
+```{r}
+HNRNP <- geneEvents(maser_test, geneS = "HNRNPA2B1", fdr=0.05, deltaPSI = 0.1)
+plotTranscripts(HNRNP, type = "SE", event_id = 88438, gtf = get_gtf, zoom = FALSE, show_PSI = TRUE)
+```
+
+
+
+
+
+```{r}
+volcano(maser_test, fdr = 0.05, deltaPSI = 0.1, type = "SE")
+```
+##MUSCLE
+
+
+```{r}
+mats_file_musc <- "rMATS_muscle"
+mats_file_musc
+maser_test_musc <- maser(mats_file_musc, c("control","case"),ftype="JCEC")
+maser_test_musc 
+```
+```{r}
+top_musc <- topEvents(maser_test_musc , fdr = 0.05, deltaPSI = 0.1)
+top_musc
+```
+```{r}
+maser::display(top_musc, "RI")
+```
+```{r}
+MACF1 <- geneEvents(maser_test_musc, geneS = "MACF1", fdr=0.05, deltaPSI = 0.1)
+plotTranscripts(MACF1, type = "RI", event_id = 4593, gtf = get_gtf, zoom = FALSE, show_PSI = FALSE)
+```
+

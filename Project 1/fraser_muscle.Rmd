@@ -1,0 +1,120 @@
+---
+title: "muscle_fraser"
+author: "jayden beckwith"
+date: "2023-04-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(FRASER)
+```
+##JOINED MUSCLE
+
+```{r pressure, echo=FALSE}
+fds <- loadFraserDataSet(file=file.path(workingDir="FRASER_MUSCLE", 
+    "savedObjects", "FiltData_jaccard", "fds-object.RDS"))
+```
+```{r}
+fds
+```
+```{r}
+optimise_jac <- optimHyperParams(fds, type="jaccard", plot=F, q = c(2,5,7), implementation = "PCA")
+bestQ(optimise_jac, type="jaccard")
+plotEncDimSearch(optimise_jac, type="jaccard", plot="auc")
+```
+```{r}
+optimise_psi5<- optimHyperParams(fds, type="psi5", plot=F, q = c(2,5,7), implementation = "PCA")
+bestQ(optimise_psi5, type="psi5")
+plotEncDimSearch(optimise_psi5, type="psi5", plot="auc")
+```
+
+```{r}
+optimise_psi3<- optimHyperParams(fds, type="psi3", plot=F, q = c(2,5,7), implementation = "PCA")
+bestQ(optimise_psi3, type="psi3")
+plotEncDimSearch(optimise_psi3, type="psi3", plot="auc")
+```
+
+```{r}
+optimise_theta<- optimHyperParams(fds, type="theta", plot=F, q = c(2,5,7), implementation = "PCA")
+bestQ(optimise_theta, type="theta")
+plotEncDimSearch(optimise_theta, type="theta", plot="auc")
+```
+
+
+
+```{r}
+Fraser_ds_run <- FRASER(fds, q=c(psi5=5,psi3=5,theta=5,jaccard=2), implementation = "PCA")
+```
+```{r}
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+
+
+
+Fraser_ds_run
+
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+orgDb <- org.Hs.eg.db
+fds <- annotateRangesWithTxDb(Fraser_ds_run, txdb=txdb, orgDb=orgDb)
+```
+```{r}
+library(dplyr)
+library(tidyverse)
+
+fds <- calculatePadjValues(fds, type="jaccard", method = "BY")
+
+genes_res <- results(fds, padjCutoff=0.05, deltaPsiCutoff = 0.3)
+genes_res
+data <- as.data.table(genes_res)
+data
+filt_control <- data[data$sampleID != "HM-C12",]
+filt_control
+```
+```{r}
+library(ggpubr)
+m5 <- filt_control[filt_control$sampleID == "HM-M30",]
+m5
+targ = c("MYH7")
+vol1 <- plotVolcano(fds, type="jaccard", padjustCuttOff = 0.05, label=targ,"HM-M30",aggregate=F)
+vol1
+
+plotBamCoverageFromResultTable(Fraser_ds_run, result = filt_control[5,], show_full_gene = T, txdb=txdb, orgDb=orgDb, control_samples="HM_C14")
+manhattan <- plotManhattan(fds, sampleID="HM-M34", label=targ, chr="chr3")
+manhattan
+```
+```{r plot 2, fig.height = 4, fig.width = 5, fig.align = "center"}
+filt_control[filt_control$sampleID == "HM-M4",]
+
+targ = c("RPL3L")
+vol1 <- plotVolcano(fds, type="jaccard", label=targ,"HM-M4",aggregate=T)
+vol1
+```
+
+```{r}
+plotQQ(fds, global = T, aggregate=T)
+```
+
+```{r}
+
+plotAberrantPerSample(fds)
+
+
+potential_ov <- annotateIntronReferenceOverlap(fds, txdb)
+potential_ov
+```
+```{r}
+overlap_res <- results(potential_ov)
+overlap_res
+FRASoverlap_res <- annotatePotentialImpact(result = overlap_res, txdb=txdb,fds = potential_ov)
+```
+

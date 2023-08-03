@@ -1,0 +1,167 @@
+---
+title: "merged_blood"
+author: "jayden beckwith"
+date: "2023-04-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(FRASER)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+fds_blood <- loadFraserDataSet(file=file.path(workingDir="MERGED_BLOOD", 
+    "savedObjects", "Data_Analysis", "fds-object.RDS"))
+```
+```{r}
+fds_blood2 <- loadFraserDataSet(file=file.path(workingDir="BIG_MERGED_BLOOD", 
+    "savedObjects", "Data_Analysis", "fds-object.RDS"))
+
+fds_blood2
+```
+
+
+
+
+```{r}
+fds_blood2
+```
+
+```{r}
+fds_psi <- calculatePSIValues(fds_blood2)
+```
+```{r}
+fds_psi
+```
+```{r}
+fds_filt <- filterExpressionAndVariability(fds_psi, minExpressionInOneSample=20,
+       minDeltaPsi=0.1, filter=TRUE)
+```
+```{r}
+fds_filt
+```
+```{r}
+fds_filtered <- fds_filt[mcols(fds_filt, type="j")[,"passed"],]
+fds_filtered
+```
+
+```{r corr1, fig.height = 8, fig.width = 7, fig.align = "center"}
+plotCountCorHeatmap(fds_filtered, type="jaccard", logit=TRUE, sampleClustering=NA, 
+        annotation_col=c("ALS", "SEX"), annotation_row=c('AGE'), minDeltaPsi = 0.01)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+optimise_jac_blood <- optimHyperParams(fds_filtered, type="jaccard", plot=F, q = c(2,5,7), implementation = "PCA")
+bestQ(optimise_jac_blood, type="jaccard")
+plotEncDimSearch(optimise_jac_blood, type="jaccard", plot="auc")
+```
+```{r}
+Fraser_blood <- FRASER(fds_filtered, q=c(jaccard=2), implementation = "PCA")
+```
+```{r}
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+
+genes()?
+
+txdb <- GenomicFeatures::genes(TxDb.Hsapiens.UCSC.hg38.knownGene, single.strand.genes.only = FALSE)
+txdb
+orgDb <- org.Hs.eg.db
+fds_bloods <- annotateRangesWithTxDb(Fraser_blood, txdb=txdb$`1`, orgDb=orgDb)
+```
+
+```{r}
+library(dplyr)
+library(tidyverse)
+
+genes <- results(fds_bloods)
+genes
+
+fds_blood_ps <- calculatePadjValues(fds_bloods, type="jaccard", method = "BY")
+
+genes_res_b <- results(fds_blood_ps, padjCutoff=0.05, deltaPsiCutoff = 0.1)
+genes_res_b
+data_ref <- as.data.table(genes_res_b)
+data_ref
+```
+```{r}
+fds_blood_reps <- loadFraserDataSet(file=file.path(workingDir="BIG_REPS_BLOOD", 
+    "savedObjects", "Data_Analysis", "fds-object.RDS"))
+
+fds_blood_reps
+```
+
+```{r}
+count_blood_reps <- countRNAData(fds_blood_reps)
+```
+```{r}
+count_blood_reps
+```
+```{r}
+count_psi_reps <- calculatePSIValues(count_blood_reps)
+```
+
+```{r}
+reps_psi <- filterExpressionAndVariability(count_psi_reps, minExpressionInOneSample=20,
+       minDeltaPsi=0.1, filter=TRUE)
+```
+
+```{r}
+reps_psi
+```
+
+```{r}
+reps_psi_filtered <- reps_psi[mcols(reps_psi, type="j")[,"passed"],]
+reps_psi_filtered
+```
+
+```{r}
+reps_blood <- FRASER(reps_psi_filtered, q=c(jaccard=2), implementation = "PCA")
+```
+
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+txdb
+orgDb <- org.Hs.eg.db
+fraser_reps_bloods <- annotateRangesWithTxDb(reps_blood, txdb=txdb, orgDb=orgDb)
+```
+```{r}
+genes_reps <- results(fraser_reps_bloods)
+genes_reps
+
+fds_blood_ps <- calculatePadjValues(fraser_reps_bloods, type="jaccard", method = "BY")
+```
+```{r}
+fds_blood_ps
+
+reps_genes <- results(fds_blood_ps, padjCutoff=0.05, deltaPsiCutoff = 0.3)
+reps_genes
+data_ref <- as.data.table(reps_genes)
+data_ref
+
+write.csv(data_ref, "blood_csv_FRASER.csv")
+```
+
