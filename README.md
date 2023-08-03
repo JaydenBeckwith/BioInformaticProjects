@@ -1,6 +1,6 @@
 # BioInformaticProjects
 
-A repo where I have uploaded my bioinformatics research projects with the pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Copyright Jayden Beckwith (and UQ IMB) 2022-2023. Most code was performed in R markdown and Jupyter notebook with some parts performed on HPC Unix/R
+A repo where I have uploaded my bioinformatics research projects with the pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Most code was performed in R markdown and Jupyter notebook with some parts performed on HPC Unix/R
 
 Project 1 - Understanding the Mechanism of ALS through RNA Sequencing 
 
@@ -21,3 +21,5 @@ Overview of RNA-seq pipeline used in this project
 Project 3 - GWAS and trait analysis
 
 Summary: This project aimed to analyze single nucleotide polymorphisms (SNPs) in the HapMap 3 of around 11,000 people from the UK Biobank study, specifically targeting the fasting glucose (FG) phenotype, which could shed light on genomic information for metabolic conditions. To identify genomic regions associated with the FG phenotype, Genome-wide association study (GWAS) analysis was used. Despite its effectiveness in detecting genetic variation, GWAS doesn't fully explain the genetic architecture of complex human traits, which are influenced by multiple genetic and environmental factors and their interactions. To better understand this, the study employed Genome wide complex trait analysis (GCTA), a two-step process which estimates genetic correlation between study participants and SNP data using the Genetic Relationship Matrix (GRM), and uses genome-based restricted maximum likelihood (GREML) to maximize the likelihood of the target traits provided by the GRM. This approach helps to effectively compare phenotypic similarity to genetic similarity in individuals. GREML also involves fitting a mixed linear model to measure the effects of SNPs. This was apart of STAT7306 course at UQ. 
+
+Copyright Jayden Beckwith (and UQ IMB) 2022-2023. 
