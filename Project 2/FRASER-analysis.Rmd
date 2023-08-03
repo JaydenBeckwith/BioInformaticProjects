@@ -1,0 +1,253 @@
+---
+title: "FRASER"
+author: "jayden beckwith"
+date: "2022-12-17"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r pressure, echo=FALSE}
+library(FRASER)
+#browseVignettes("FRASER")
+library(Rsamtools)
+library(ggplot2)
+library(dplyr)
+```
+
+
+```{r}
+#FRASER has inbuilt counts
+bam_files <- list.files("sorted_bam/.")
+bam_files
+
+#index_bam <- indexBam("sorted_bam/4192870_11072103600_S12Aligned.sortedByCoord.out.bam")
+#index_bam
+
+```
+
+```{r}
+sampleTable <- fread("FRASER_meta.csv")
+sampleTable
+
+```
+
+
+```{r}
+bamFiles <- (sampleTable[,bamFile])
+bamFiles
+```
+```{r}
+# create FRASER object
+settings <- FraserDataSet(colData=sampleTable, workingDir="FRASER_analysis_output")
+settings
+```
+
+```{r}
+#dont run take ages 
+fds <- countRNAData(settings)
+```
+```{r}
+#save fds obj 
+#workingDir(fds) <- "FRASER_analysis_output"
+#name(fds) <- "FraserAnalysis"
+#saveFraserDataSet(fds, dir=workingDir(fds), name=name(fds))
+```
+
+```{r}
+#load dataset 
+fds <- loadFraserDataSet(file=file.path(workingDir="FRASER_analysis_output",
+"savedObjects", "Data_Analysis", "fds-object.RDS"))
+```
+
+```{r}
+#get splicing metrics 
+fds <- calculatePSIValues(fds)
+fds
+```
+
+
+```{r}
+#filter out introns with low read support 
+fds <- filterExpressionAndVariability(fds, minDeltaPsi=0.1, filter=FALSE)
+plotFilterExpression(fds, bins=100)
+```
+
+
+```{r}
+#filter based on passed status 
+fds_filtered <- fds[mcols(fds, type="j")[,"passed"],]
+fds_filtered
+```
+
+
+```{r}
+plotCountCorHeatmap(fds_filtered, type="theta",logit=F, sampleClustering=NA, 
+        annotation_col=c("studyID", "gender"), annotation_row=c('group'),topJ=100, minDeltaPsi = 0.01)
+```
+
+```{r}
+plotCountCorHeatmap(fds_filtered, type="psi5", logit=TRUE, sampleClustering=NA, 
+        annotation_col=c("studyID", "gender"), annotation_row=c('group'),
+        topJ=100, minDeltaPsi = 0.01)
+```
+```{r}
+plotCountCorHeatmap(fds_filtered, type="psi3", logit=TRUE, sampleClustering=NA, 
+        annotation_col=c("studyID", "gender"), annotation_row=c('group'),topJ=100, minDeltaPsi = 0.01)
+```
+
+Find optimal parameters to use for FRASER
+
+
+```{r}
+#loop to get hyperparameters estimates 
+for(i in c("psi5", "psi3", "theta")) {
+    fds_opt <- optimHyperParams(fds_filtered, i, plot=FALSE, implementation="PCA-BB-Decoder")
+    plotEncDimSearch(fds_opt, type=i, plotType="auc")
+    plotEncDimSearch(fds_opt, type=i, plotType="loss")
+}
+```
+
+Run each hyperparameter individually 
+
+```{r}
+set.seed(42)
+#check each individually - non looped 
+# hyperparameter opimization
+optimise_psi5 <- optimHyperParams(fds_filtered, type="psi5", plot=FALSE, implementation="PCA-BB-Decoder")
+# retrieve the estimated optimal dimension of the latent space
+bestQ(optimise_psi5, type="psi5")
+plotEncDimSearch(optimise_psi5, type="psi5", plotType="loss")
+plotEncDimSearch(optimise_psi5, type="psi5", plotType="auc")
+```
+
+```{r}
+set.seed(42)
+# hyperparameter optimization
+optimise_psi3 <- optimHyperParams(fds_filtered, type="psi3", plot=FALSE, implementation="PCA-BB-Decoder")
+# retrieve the estimated optimal dimension of the latent space
+bestQ(optimise_psi3, type="psi3")
+plotEncDimSearch(optimise_psi3, type="psi3", plotType = "auc")
+plotEncDimSearch(optimise_psi3, type="psi3", plotType = "loss")
+```
+```{r}
+set.seed(42)
+# hyperparameter opimization
+optimise_theta <- optimHyperParams(fds_filtered, type="theta", plot=FALSE, implementation="PCA-BB-Decoder")
+# retrieve the estimated optimal dimension of the latent space
+bestQ(optimise_theta, type="theta")
+plotEncDimSearch(optimise_theta, type="theta", plotType = "auc")
+```
+
+Run FRASER - Hybrid implementation approach  
+
+
+```{r}
+#hybrid approach between PCA and the full AE - recommended by authors
+fds_PCA <- FRASER(fds_filtered, q=c(psi5=11, psi3=8, theta=8), implementation="PCA-BB-Decoder")
+```
+
+```{r}
+plotCountCorHeatmap(fds_PCA, type="psi5", normalized=T, sampleClustering=NA, logit=TRUE,
+                     annotation_col=c("studyID", "gender"), annotation_row=c('group'),topJ=100, minDeltaPsi = 0.01)
+```
+
+
+```{r}
+library(biomaRt)
+# annotate introns with the HGNC symbols of the corresponding gene
+
+##rowRanges(fds_anno, type="psi3")[,c("hgnc_symbol")] %>% as.data.frame()
+
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(org.Hs.eg.db)
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+orgDb <- org.Hs.eg.db
+fds.anno2 <- annotateRangesWithTxDb(fds_PCA, txdb=txdb, orgDb=orgDb)
+fds.anno2
+
+```
+
+
+
+```{r}
+res1 <- results(fds.anno2, zScoreCutoff=NA, padjCutoff=NA, deltaPsiCutoff=0.1)
+res2 <-results(fds.anno2, zScoreCutoff=NA, padjCutoff=0.05, deltaPsiCutoff=0.3)
+```
+```{r}
+gene_res <-resultsByGenes(res1, geneColumn = "hgncSymbol", method = "BY") %>% as.data.frame()
+head(gene_res )
+```
+```{r}
+sig_res <-resultsByGenes(res2, geneColumn = "hgncSymbol", method = "BY") %>% as.data.frame()
+sig_res
+```
+
+Check splicing in known ALS targeted genes 
+```{r}
+targ <- c("FUS","TARDBP", "C9orf72",
+"SOD1", "OPTN", "TBK1", "NEK1", "ABCD1", "UNC13A")
+sub_genes <- subset(gene_res, hgncSymbol %in% targ)
+sub_genes
+
+```
+
+
+
+
+```{r}
+plotVolcano(fds.anno2, type="theta", "sample7")
+plotVolcano(fds.anno2, type="psi3", "sample7")
+plotVolcano(fds.anno2, type="psi5", "sample7")
+```
+
+Aberrant events across splice metrics samples 1 -6 Pax and 7 - 12 eRNA 
+
+```{r}
+aberrant(fds_PCA,type="psi5", by='sample', zScoreCutoff=NA, padjCutoff=0.05, deltaPsiCuttoff = 0.3)
+```
+```{r}
+aberrant(fds_PCA,type="psi3", by='sample', zScoreCutoff=NA, padjCutoff=0.05, deltaPsiCuttoff = 0.3)
+```
+```{r}
+aberrant(fds_PCA,type="theta", by='sample', zScoreCutoff=NA, padjCutoff=0.05, deltaPsiCuttoff = 0.3)
+```
+
+```{r}
+get_pvals <- calculatePadjValues(fds.anno2, type="theta", method="BY")
+head(padjVals(get_pvals,type="theta"))
+
+```
+
+```{r}
+get_zscores <- calculateZscore(fds_PCA, type="psi5")
+head(zScores(get_zscores, type="psi5"))
+
+```
+```{r}
+plotAberrantPerSample(fds.anno2)
+```
+
+Plots of most sig locus for aberrant splicing across samples
+
+```{r}
+plotExpectedVsObservedPsi(fds.anno2, type = "theta", result = res2[1])
+```
+
+```{r}
+plotExpression(fds.anno2, type = "psi5", result = res2[1])
+```
+
+```{r}
+plotQQ(fds.anno2, result=res2[1])
+```
+
+
+
+
+

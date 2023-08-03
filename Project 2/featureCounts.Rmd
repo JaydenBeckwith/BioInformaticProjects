@@ -1,0 +1,125 @@
+---
+title: "FeatureCounts"
+author: "jayden beckwith"
+date: "09/12/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(Rsubread)
+library(Rsamtools)
+library(data.table)
+
+```
+
+```{r pressure, echo=FALSE}
+bam_files <- list.files("sorted_bam/.")
+bam_files
+
+bam <- c("sorted_bam/2932042_11072135600_S10Aligned.sortedByCoord.out.bam", 
+         "sorted_bam/2932042_11072148600_S4Aligned.sortedByCoord.out.bam",
+         "sorted_bam/3061152_11072116600_S11Aligned.sortedByCoord.out.bam",
+         "sorted_bam/3061152_11072133600_S5Aligned.sortedByCoord.out.bam", 
+         "sorted_bam/4192870_11072103600_S12Aligned.sortedByCoord.out.bam",
+         "sorted_bam/4192870_11072131600_S6Aligned.sortedByCoord.out.bam", 
+         "sorted_bam/4569009_11072686600_S8Aligned.sortedByCoord.out.bam",
+         "sorted_bam/4569009_11072698600_S2Aligned.sortedByCoord.out.bam", 
+          "sorted_bam/5658090_11072378600_S9Aligned.sortedByCoord.out.bam",
+         "sorted_bam/5658090_11072476600_S3Aligned.sortedByCoord.out.bam",
+         "sorted_bam/6645288_11073567600_S7Aligned.sortedByCoord.out.bam",
+         "sorted_bam/6645288_11073590600_S1Aligned.sortedByCoord.out.bam" )
+```
+From Anna
+
+counted_features <- runsheet$star_sam %>%
+  featureCounts(
+    files = .,
+    annot.ext = opts$gtf, # GTF/annotation file
+    genome = opts$fasta, # Fasta file for GTF
+    nthreads = parallel::detectCores(), # Don’t need this.
+    isPairedEnd = TRUE,
+    requireBothEndsMapped = TRUE,
+    allowMultiOverlap = FALSE,
+    isGTFAnnotationFile = TRUE,
+    useMetaFeatures = useMetaFeatures, # This parameter, TRUE/FALSE lets you summarize whatever feature you’re counting up to gene-level (or whatever else you put in attrType).
+    GTF.featureType = opts$feature, # For instance, “gene”
+    GTF.attrType = GTF.attrType # This is the metafeature to quantify, if you’re using it
+  )
+
+
+```{r pressure, echo=FALSE}
+
+#fc at the exon level - gene gene exp
+fc <- featureCounts(files=bam,
+              annot.ext="gencode.v39.annotation.gtf",
+              isPairedEnd = TRUE,
+              requireBothEndsMapped = TRUE,
+              allowMultiOverlap = FALSE,
+              isGTFAnnotationFile = TRUE,
+              GTF.featureType="exon",
+              useMetaFeatures=TRUE,
+              juncCounts = TRUE,
+              GTF.attrType="gene_id")
+```
+```{r}
+#fc_counts at exons frags
+fc_counts_exon <- as.data.frame(fc[['counts']])
+fc_counts_exon
+```
+```{r}
+fwrite(fc_counts_exon, row.names = TRUE, "fc_counts_exon1.csv")
+```
+
+
+
+```{r}
+saveRDS(fc, file="fc_exon_data.Rdata")
+```
+
+
+```{r}
+#fc at the gene level - with splice junctions
+fc_gene_strand_2 <- featureCounts(files=bam,
+              annot.ext="gencode.v39.annotation.gtf",
+              isPairedEnd = TRUE,
+              requireBothEndsMapped = TRUE,
+              allowMultiOverlap = FALSE,
+              isGTFAnnotationFile = TRUE,
+              useMetaFeatures=TRUE,
+              GTF.featureType="exon",
+              juncCounts = TRUE,
+              strandSpecific=2,    
+              GTF.attrType="gene_id")
+```
+```{r}
+#at meta gene level 
+fc_counts <- as.data.frame(fc_gene_strand_2[['counts']])
+fc_counts
+
+fwrite(fc_counts,row.names=T, "fc_counts_exon_reversestrand.csv")
+```
+```{r}
+#fc_counts at exons frags
+fc_junction <- as.data.frame(fc_gene_strand_2[['counts_junction']])
+fc_junction
+
+fwrite(fc_junction,row.names=T, "fcrev_junctioncounts.csv")
+
+
+fc_annotation <- as.data.frame(fc_gene_strand_2[['annotation']])
+fc_annotation
+
+fwrite(fc_annotation,row.names=T, "fcrev_annotation.csv")
+
+```
+

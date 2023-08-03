@@ -1,0 +1,1584 @@
+---
+title: "DGE analysis"
+author: "jayden beckwith"
+date: "07/12/2022"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=TRUE}
+#libraries
+library(dplyr)
+library(tidyverse)
+library(DESeq2)
+library(biomaRt)
+library(tibble)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(ggplot2)
+library(data.table)
+library(ggrepel)
+library(reticulate)
+library(VennDiagram)
+library(plotly)
+library(limma)
+library(ggpubr)
+library(edgeR)
+library(gridExtra)
+library(statmod)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(OUTRIDER)
+```
+
+From 12 BAMs and annotation file using featureCounts with RSubread:
+
+#used to get df counts - "fc_counts_exon1.csv"
+fc <- featureCounts(files=bam,
+              annot.ext="gencode.v39.annotation.gtf",
+              isPairedEnd = TRUE,
+              requireBothEndsMapped = TRUE,
+              allowMultiOverlap = FALSE,
+              isGTFAnnotationFile = TRUE,
+              GTF.featureType="exon",
+              useMetaFeatures=TRUE,
+              juncCounts = TRUE,
+              GTF.attrType="gene_id")
+              
+
+I also checked counts mapping to only reverse strand to see difference in counts with the fc command:
+fc_gene_rev <- featureCounts(files=bam,
+              annot.ext="gencode.v39.annotation.gtf",
+              isPairedEnd = TRUE,
+              requireBothEndsMapped = TRUE,
+              allowMultiOverlap = FALSE,
+              isGTFAnnotationFile = TRUE,
+              useMetaFeatures=TRUE,
+              GTF.featureType="exon",
+              juncCounts = TRUE,
+              strandSpecific=2,    
+              GTF.attrType="gene_id")
+
+COnfirmed by wet lab - used rev stranded library. Using reverse stranded RNA counts 
+
+```{r}
+#counts from featureCounts exon feature level - rev strand
+count_data <- read.csv("fc_counts_exon_reversestrand.csv")
+count_df <- data.frame(count_data, row.names = 1)
+count_df <- subset(count_df, select = -c(X.1))
+head(count_df)
+
+```
+
+
+```{r data}
+#metadata for co-variates and other info  
+col_data <- read.csv("metadata.csv")
+col_df <- data.frame(col_data, row.names = 1)
+```
+
+
+
+
+```{r}
+#all values are present in cols and col rows
+all(colnames(count_df) %in% rownames(col_df))
+all(colnames(count_df) == rownames(col_df))
+```
+
+
+```{r}
+#factor cols and relevel
+
+col_df$Type<- factor(col_df$Type)
+
+col_df$Study.ID <- factor(col_df$Study.ID)
+col_df
+```
+Design #1 - Paired test for Study ID and RNA type 
+
+
+```{r}
+#Dataset matrices
+
+#design matrix with participants type of interest 
+part_dds <- DESeqDataSetFromMatrix(countData = count_df, 
+                                   colData = col_df, 
+                                   #study ID with RNA type 
+                                   design = ~ Study.ID + Type
+                                   
+                                   )
+
+part_dds
+
+
+
+```
+```{r}
+
+#filter low mapped reads - following vingette lets just choose 10
+keep <- rowSums(counts(part_dds)) >= 10
+part_dds <- part_dds[keep,]
+
+#set ref level - PAX
+part_dds$Type <- relevel(part_dds$Type, ref = "PAX")
+part_dds$Type
+
+```
+
+
+Show variance between both RNA sample types
+
+```{r fig10, fig.height = 6, fig.width = 10, fig.align = "center"}
+#perform scaling 
+dds <- estimateSizeFactors(part_dds)
+
+#normalise data and summarise cols for PCA
+se <- SummarizedExperiment(log2(counts(dds, normalized=TRUE) + 1),
+                           colData=colData(dds))
+#plot PCA 
+pca_d1 <- plotPCA( DESeqTransform( se ), intgroup=c("Type", "Gender", "Study.ID"), returnData=TRUE)
+
+percentVar <- round(100 * attr(pca_d1, "percentVar"))
+pca_plot <- ggplot(pca_d1, aes(PC1, PC2, color=Study.ID, shape=Gender, group=Type)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed() + 
+  ggtitle("PCA of eRNA and PAX") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_label_repel(data = pca_d1, aes(label = rownames(col_df))) + stat_ellipse(linetype=2, aes(PC1, PC2, color=Type)) + guides(color=F)
+```
+
+```{r fig09, fig.height = 6, fig.width = 8, fig.align = "center"}
+pca_plot
+```
+
+```{r}
+#run DeSeq
+part_dds_ds <- DESeq(dds)
+```
+
+
+
+```{r}
+dseq_res <- DESeq2::results(part_dds_ds)#contrast=c("Type","PAX","e-RNA"))
+dseq_res
+```
+
+
+
+
+
+
+```{r}
+summary(dseq_res)
+```
+
+```{r}
+resultsNames(part_dds_ds)
+```
+
+
+
+```{r}
+res.05 <- DESeq2::results(part_dds_ds)
+table(res.05$padj < 0.05)
+```
+
+
+
+```{r}
+#set dseq results as df
+dseq_df <- as.data.frame(dseq_res)
+
+head(dseq_df)
+
+```
+```{r}
+#use tibble to set rowname to col for edit
+df <- tibble::rownames_to_column(dseq_df, "ID")
+#need to be trimmed using regex and tidy for ensembl ids 
+count_trim <- df %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+nrow(count_trim)
+head(count_trim)
+
+```
+
+```{r}
+#BIomart db - get annotations 
+listMarts()
+```
+```{r}
+ensembl=useMart("ENSEMBL_MART_ENSEMBL")
+listDatasets(ensembl) %>% filter(grepl("Human",description))
+```
+```{r}
+ensembl.con <- useMart("ensembl", dataset = "hsapiens_gene_ensembl", host="https://uswest.ensembl.org")
+attr <- listAttributes(ensembl.con)
+filters <- listFilters(ensembl.con)
+```
+
+
+```{r}
+#id, gene type, gene name
+gene_df <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = count_trim$ensembl_gene_id,
+      mart = ensembl.con))
+```
+```{r}
+head(gene_df)
+```
+
+
+```{r}
+#merge dfs via ensemble ids 
+ensembl_DEGs <- merge(count_trim, gene_df, by='ensembl_gene_id', all='TRUE')
+#filt nans
+filt_ensembl <- drop_na(ensembl_DEGs)
+filt_ensembl <- data.frame(filt_ensembl, row.names = 2)
+#filt_ensembl <- filt_ensembl %>% distinct(external_gene_name, .keep_all = TRUE)
+head(filt_ensembl)
+```
+
+
+
+```{r}
+#upregulated genes at LFC > 1 threshold and sig by p adj
+upreg <- filt_ensembl %>% filter(log2FoldChange > 1 & padj < 0.05)
+#no upreg genes
+nrow(upreg)
+```
+```{r}
+head(upreg)
+```
+
+```{r}
+#downregulated genes at LFC < - 1 threshold and sig by padj
+downreg <- filt_ensembl %>% filter(log2FoldChange < -1 & padj < 0.05)
+head(downreg)
+```
+
+
+
+```{r}
+#no. downreg genes
+nrow(downreg)
+```
+
+
+
+```{r}
+#dispersion plot
+plotDispEsts(part_dds_ds, main='Design #1 - Dispersion Plot')
+```
+
+
+
+```{r}
+#DESIGN 1
+#subset to get only protein coding genes
+pc_genes <- subset(filt_ensembl, gene_biotype=='protein_coding')
+
+#get top 20 protein coding DEGs
+top_20_genes <- head(pc_genes[order(pc_genes$padj),], 100)
+#set as df
+top_20_genes <- as.data.frame(top_20_genes)
+head(top_20_genes)
+```
+```{r fig2, fig.height = 6, fig.width = 8, fig.align = "center"}
+lab_italics <- paste0("italic('", lab = pc_genes$external_gene_name, "')")
+  selectLab_italics = paste0(
+    "italic('",
+    c('RPL21', 'SWT1', 'G0S2'),
+    "')")
+
+d1 <- EnhancedVolcano(pc_genes,
+    lab = lab_italics,
+    x = 'log2FoldChange',
+    y = 'padj',
+    selectLab = selectLab_italics,
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 1e-4,
+    title = 'Volcano Plot of Isolation Type and Study ID',
+    FCcutoff = 1.0,
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    parseLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'bottom',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black')
+```
+
+```{r}
+#normalise counts for matrix 
+mat <- counts(part_dds_ds, normalized = T)[rownames(top_20_genes),]
+#get zscores for new matrix scale by 1 when transposing 
+mat_z <- t(apply(mat,1,scale))
+#set col names for new df - sample ID
+colnames(mat_z) <-rownames(col_df)
+rownames(mat_z) <- top_20_genes$external_gene_name
+```
+```{r}
+
+ann <- data.frame(Gender = col_df$Gender,
+                  Type = col_df$Type, stringsAsFactors = F)
+
+colours <- list(
+    Gender = c('Male' = 'blue', 'Female' = 'green'),
+    Type = c("PAX" = "yellow","eRNA" = "orange"))
+colAnn <- HeatmapAnnotation(
+    df = ann,
+    which = "col", # 'col' (samples) or 'row' (gene) annotation?
+    na_col = 'white', # default colour for any NA values in the annotation data-frame, 'ann'
+    col = colours,
+    annotation_height = 0.6,
+    annotation_width = unit(1, 'cm'),
+    gap = unit(1, 'mm'),
+    annotation_legend_param = list(
+      Gender = list(
+        nrow = 1, # number of rows across which the legend will be arranged
+        title = 'Gender',
+        title_position = 'topcenter',
+        legend_direction = 'vertical',
+        title_gp = gpar(fontsize = 8, fontface='bold'),
+        labels_gp = gpar(fontsize = 8)),
+      Type = list(
+        nrow = 1, # number of rows across which the legend will be arranged
+        title = 'Type',
+        title_position = 'topcenter',
+        legend_direction = 'vertical',
+        title_gp = gpar(fontsize = 8, fontface = "bold"),
+        labels_gp = gpar(fontsize = 8))
+      ))
+
+boxplotCol <- HeatmapAnnotation(
+    boxplot = anno_boxplot(
+      mat_z,
+      border = FALSE,
+      gp = gpar(fill = '#CCCCCC'),
+      pch = '.',
+      size = unit(2, 'mm'),
+      axis = TRUE,
+      axis_param = list(
+        gp = gpar(fontsize = 12),
+        side = 'left')),
+      annotation_width = unit(c(2.0), 'cm'),
+      which = 'col')
+
+
+#make heatmap for clustering 
+DGE_heatmap <- Heatmap(mat_z, 
+                       cluster_rows = T, 
+                       cluster_columns = T, 
+                       column_labels = colnames(mat_z),
+                       name = "z-score",
+                       column_title = "Samples",
+                       row_title = "Genes", 
+                       show_row_names = T,
+                       bottom_annotation = boxplotCol,
+                       top_annotation = colAnn)
+
+DGE_heatmap
+```
+RNA types and Samples for Clustering heatmap
+PAX - S1 - S6
+eRNA - S7 - S12
+
+Use GO 
+
+```{r}
+GO_DEGs <- top_20_genes$ensembl_gene_id
+GO <- enrichGO(gene = GO_DEGs, OrgDb = "org.Hs.eg.db", key = "ENSEMBL", ont = "ALL")
+GO %>% as.data.frame()
+dotplot(GO, title="Biological Processes of Differentially Expressed Genes") + facet_grid(ONTOLOGY~., scales="free")
+```
+```{r}
+pc_downreg <- downreg %>% filter(gene_biotype == 'protein_coding')
+GO_downreg <- pc_downreg$ensembl_gene_id
+GO_d <- enrichGO(gene = GO_downreg, OrgDb = "org.Hs.eg.db", key = "ENSEMBL", ont = "BP")
+GO_d %>% as.data.frame()
+dotplot(GO_d, title="Downregulated Differentially Expressed Genes")
+```
+```{r}
+pc_upreg <- upreg %>% filter(gene_biotype == 'protein_coding')
+GO_upreg <- pc_upreg$ensembl_gene_id
+GO_up <- enrichGO(gene = GO_upreg, OrgDb = "org.Hs.eg.db", key = "ENSEMBL", ont = "ALL")
+dotplot(GO_up, title="Upregulated Differentially Expressed Genes") + facet_grid(ONTOLOGY~., scales="free")
+```
+
+
+
+
+
+Design #2 - Gender effect with Study.ID and Type
+
+```{r}
+col_df$Gender <- factor(col_df$Gender)
+col_df$Age <- factor(col_df$Age)
+col_df$Status <- factor(col_df$Status)
+col_df
+```
+
+
+
+
+```{r}
+#Dataset matrices
+des_model_mat <- model.matrix(~ Gender + Type, col_df)
+#design matrix with participants type of interest - case vs control
+gen_dds <- DESeqDataSetFromMatrix(countData = count_df, 
+                                   colData = col_df, 
+                                   #study ID with RNA type 
+                                   design = des_model_mat
+                                   
+                                   )
+
+gen_dds
+
+
+
+```
+
+
+
+```{r}
+
+#filter low mapped reads - following vingette lets just choose 10
+keep_gen <- rowSums(counts(gen_dds)) >= 10
+gen_dds <- gen_dds[keep_gen,]
+```
+
+
+```{r}
+#set ref level - PAX
+gen_dds$Type <- relevel(gen_dds$Type, ref = "PAX")
+gen_dds$Type
+
+```
+```{r}
+#run DeSeq
+gen_dds_ds <- DESeq(gen_dds)
+gen_dds_ds
+```
+
+```{r}
+gen_res <- DESeq2::results(gen_dds_ds)#contrast=c("Type","PAX","e-RNA"))
+gen_res
+```
+```{r}
+summary(gen_res)
+```
+
+```{r}
+resultsNames(gen_dds_ds)
+```
+
+
+
+```{r}
+res.05_gen <- DESeq2::results(gen_dds_ds)
+table(res.05_gen$padj < 0.05)
+```
+Compare with Study.ID and type from design #1.
+
+```{r}
+table(res.05$padj < 0.05)
+
+```
+
+
+```{r}
+#set dseq results as df
+gen_df <- as.data.frame(gen_res)
+
+head(gen_df)
+
+```
+
+```{r}
+
+#use tibble to set rowname to col for edit
+df_gen <- tibble::rownames_to_column(gen_df, "ID")
+#need to be trimmed using regex and tidy for ensembl ids 
+gen_trim <- df %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+nrow(gen_trim)
+head(gen_trim)
+
+```
+
+```{r}
+#merge dfs via ensemble ids 
+gen_DEGs <- merge(gen_trim, gene_df, by='ensembl_gene_id', all='TRUE')
+#filt nans
+filt_gen <- drop_na(gen_DEGs)
+filt_gen <- data.frame(filt_gen, row.names = 2)
+#filt_ensembl <- filt_ensembl %>% distinct(external_gene_name, .keep_all = TRUE)
+head(filt_gen)
+```
+```{r}
+#subset to get only protein coding genes
+pc_genes_gen <- subset(filt_gen, gene_biotype=='protein_coding')
+```
+
+
+
+```{r fig2, fig.height = 6, fig.width = 8, fig.align = "center"}
+lab_italics_2 <- paste0("italic('", lab = pc_genes_gen$external_gene_name, "')")
+  selectLab_italics = paste0(
+    "italic('",
+    c('SWT1', 'G0S2', 'RPL21'),
+    "')")
+
+  EnhancedVolcano(pc_genes_gen,
+    lab = lab_italics,
+    x = 'log2FoldChange',
+    y = 'padj',
+    selectLab = selectLab_italics,
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 1e-4,
+    title = 'Sex effect with Isolation Type',
+    FCcutoff = 1.0,
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    parseLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'bottom',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black') 
+
+```
+
+LIMMA analysis - using Study.ID as a random effect
+
+```{r}
+keeps <- rowSums(count_df) >= 10
+filt_count_df <- count_df[keeps,]
+
+
+#normalise data and fit design 
+y <- DGEList(filt_count_df)
+nc <- cpm(y, normalized.lib.sizes=T)
+
+
+lim_design <- model.matrix(~ Type + Study.ID, col_df)
+v <- voom(nc, lim_design, plot = T)
+
+#set count matrix and design with study.ID as random effect
+corfit_main <- duplicateCorrelation(v, lim_design, block = col_df$Study.ID)
+#fit linear model with random effect
+fit <- lmFit(v, lim_design,block = col_df$Study.ID, correlation = corfit_main$consensus)
+fit <- eBayes(fit)
+fit$design
+```
+
+```{r}
+tab <- topTreat(fit, coef=2, n = 50000)
+tab$ids <- rownames(tab)
+head(tab)
+```
+Results of Random effect Study.ID with Type - PAX as ref
+```{r}
+results <- decideTests(fit[,"TypePAX"])
+summary(results)
+```
+
+
+```{r}
+tab <- tab %>% mutate(ensembl_gene_id = gsub("\\..*","", ids))
+#id, gene type, gene name
+gene_limma <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = tab$ensembl_gene_id,
+      mart = ensembl.con))
+```
+```{r}
+head(gene_limma)
+```
+```{r}
+tab <- merge(tab, gene_limma, by='ensembl_gene_id', all='TRUE')
+pc_tab <- tab %>% filter(gene_biotype == "protein_coding") %>% as.data.frame()
+head(pc_tab %>% arrange(adj.P.Val))
+```
+
+
+
+```{r fig22, fig.height = 6, fig.width = 8, fig.align = "center"}
+
+#only Protein coding genes 
+lab_italics_4 <- paste0("italic('", lab = pc_tab$external_gene_name, "')")
+  selectLab_italics = paste0(
+    "italic('",
+    c('SWT1', "G0S2"),
+    "')")
+
+  EnhancedVolcano(pc_tab,
+    lab = lab_italics_4,
+    x = 'logFC',
+    y = 'adj.P.Val',
+    selectLab = selectLab_italics,
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 1e-4,
+    title = 'Design #3 Volcano Plot',
+    FCcutoff = 1.0,
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    parseLabels = TRUE,
+    colAlpha = 4/5,
+    legendPosition = 'bottom',
+    legendLabSize = 14,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black')
+
+```
+
+Using DREAM - Differential expression testing with linear mixed models for repeated measures
+
+
+```{r}
+library(BiocParallel)
+library(variancePartition)
+#dream analysis 
+vobj_tmp = voom( nc, lim_design, plot=FALSE)
+dupcor <- duplicateCorrelation(vobj_tmp,lim_design,block=col_df$Study.ID)
+
+# run voom considering the duplicateCorrelation results
+# in order to compute more accurate precision weights
+# Otherwise, use the results from the first voom run
+vobj = voom( nc, lim_design, plot=FALSE, block=col_df$Study.ID, correlation=dupcor$consensus)
+
+form <- ~ Type + (1|Study.ID)
+#vobjDream = voomWithDreamWeights(vobj, form, col_df)
+```
+
+```{r}
+fitdream <- dream(vobj, form, col_df)
+```
+
+
+```{r}
+res_dream = eBayes(fitdream)
+results_dream<- decideTests(res_dream)
+summary(results_dream)
+```
+
+```{r}
+topTable(fitdream, coef="TypePAX", n = 50000) 
+```
+
+Plot variance explained - vp_form - both categorical = random following 
+https://bioc.ism.ac.jp/packages/3.7/bioc/vignettes/variancePartition/inst/doc/dream.html
+
+```{r}
+#vp_form set to random since both are categorical variables as per vignette
+vp_form <- ~ (1|Type) + (1|Study.ID)
+vp = fitExtractVarPartModel(vobj, vp_form, col_df)
+var_plot <- plotVarPart( sortCols(vp))
+
+```
+
+```{r}
+annotate_figure(var_plot, 
+                top = text_grob("Variance Explained for Isolation Type VS Study ID as Random Effect", color = "black", face = "bold", size = 14))
+```
+
+
+```{r}
+
+i <- which.max(vp$Type)
+GE <- data.frame(Expression = nc[i,], Type = col_df$Type)
+GE
+
+
+col_df$PtLabel
+# Figure 2a
+# plot expression stratified by Tissue
+plotStratify( Expression ~ Type, GE, main=rownames(nc)[i])
+#
+# get gene with the highest variation across Individuals
+# create data.frame with expression of gene i and individual
+# type for each sample
+j <- which.max( vp$Study.ID )
+GN <- data.frame( Expression = nc[i,],
+Study.ID  = col_df$PtLabel)
+GN
+# Figure 2b
+# plot expression stratified by Tissue
+label <- paste("Individual:", format(vp$Type[i]*100,
+digits=2), "%")
+main <- rownames(nc)[i]
+plotStratify( Expression ~ Study.ID, GN,
+text=label, main=main)
+GN
+```
+
+Visualise counts
+
+```{r}
+summary(count_df)
+```
+
+
+```{r}
+
+boxplot(count_df, main='Raw counts', las=2)
+```
+```{r}
+logcounts <- log2(count_df + 1)
+
+statusCols <- str_replace_all(col_df$Type, c(PAX="red",eRNA ="yellow"))
+# Check distributions of samples using boxplots
+boxplot(logcounts,
+        xlab="Samples",
+        ylab="Log2(Counts+1)",
+        las=2,
+        col=statusCols,
+        main="Log Transformation of Counts Across Samples")
+legend("topleft", c("PAX", "eRNA"), bty = "n", fill = c("red", "yellow"), horiz = TRUE)
+
+```
+Normalised Counts
+
+```{r}
+normalise <- log2(counts(part_dds_ds, normalized=TRUE) + 1)
+nomralisev2 <- log2(count_df)
+statusCols <- str_replace_all(col_df$Type, c(PAX="red",eRNA ="yellow"))
+
+boxplot(normalise,
+        xlab="Samples",
+        ylab="Log2(Counts+1)",
+        las=2,
+        main="Normalised Log Transformed Counts Across Samples",col=statusCols)
+legend("topleft", c("PAX", "eRNA"), bty = "n", fill = c("red", "yellow"), horiz = TRUE)
+```
+```{r fig4, fig.height = 6, fig.width = 8, fig.align = "center"}
+#visualise density 
+normalise <- normalise %>% as.data.frame() 
+#get density distribution across all samples 
+ge <- normalise %>% rownames_to_column(var="gene")
+ge <- ge %>% gather(key="Sample", value = "normalised log2(counts+1)",-gene) %>% ggplot(aes(x = `normalised log2(counts+1)`, colour=Sample))+ geom_density(show.legend = F) +
+labs(title = "Density Distribution of Counts After Normalisation") + theme(plot.title = element_text(hjust = 0.5))
+ge
+```
+
+
+Genes that are unique to each RNA type - PAX vs eRNA
+Get total raw read counts per each gene compare against PAX vs eRNA
+Check which genes are overlapping between PAX and eRNA
+What are the most abundant genes?
+
+```{r}
+#separate counts via RNA sample type 
+
+#PAX S1 --> S6
+pax_df <- count_df[,0:6]
+
+##eRNA S7 --> S12
+eRNA_df <- count_df[,7:12]
+
+#sum of counts for each gene with row means across all samples and round to whole number of counts 
+pax_count_sum <- as.data.frame(round(rowMeans(pax_df),0))
+colnames(pax_count_sum)[1] = 'pax_total_count'
+head(pax_count_sum)
+
+
+eRNA_count_sum <- as.data.frame(round(rowMeans(eRNA_df),0))
+colnames(eRNA_count_sum)[1] = 'eRNA_total_count'
+head(eRNA_count_sum)
+
+```
+Based on the mean sum of samples across genes = total count for each eRNA and PAX sample
+
+
+```{r}
+filt_eRNA <- eRNA_count_sum %>% filter(eRNA_total_count > 10)
+nrow(filt_eRNA)
+```
+
+
+```{r}
+filt_pax <- pax_count_sum %>% filter(pax_total_count > 10)
+nrow(filt_pax)
+```
+
+Get pax genes
+
+```{r}
+pax_genes <- as.data.frame(filt_pax)
+pax_genes <- tibble::rownames_to_column(pax_genes, "ID")
+head(pax_genes)
+```
+
+
+
+```{r}
+pax_genes <- pax_genes %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+head(pax_genes)
+```
+Get pax gene names 
+
+```{r}
+#get pax gene names 
+pax_names <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = pax_genes$ensembl_gene_id,
+      mart = ensembl.con))
+head(pax_names)
+
+```
+```{r}
+#merge names into pax gene df
+merged_pax <- merge(pax_genes, pax_names, by='ensembl_gene_id', all='TRUE')
+
+rmdups_pax <- merged_pax %>% distinct(external_gene_name, .keep_all = TRUE)
+rmdups_pax %>% arrange(desc(pax_total_count))
+nrow(rmdups_pax)
+```
+
+Get eRNA genes 
+
+```{r}
+eRNA_genes <- as.data.frame(filt_eRNA)
+eRNA_genes <- tibble::rownames_to_column(eRNA_genes, "ID")
+head(eRNA_genes)
+
+```
+```{r}
+eRNA_genes <- eRNA_genes %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+head(eRNA_genes)
+```
+Get eRNA gene names 
+
+```{r}
+#get eRNA gene names 
+eRNA_names <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = eRNA_genes$ensembl_gene_id,
+      mart = ensembl.con))
+head(eRNA_names)
+
+```
+```{r}
+
+#merge names into eRNA gene df
+merged_eRNA <- merge(eRNA_genes, eRNA_names, by='ensembl_gene_id', all='TRUE')
+
+rmdups_eRNA <- merged_eRNA %>% distinct(external_gene_name, .keep_all = TRUE)
+head(rmdups_eRNA %>% arrange(desc(eRNA_total_count)))
+nrow(rmdups_eRNA)
+```
+
+Check for key genes that are linked to MND from literature 
+
+C9orf72, FUS,TARDBP
+SOD1, OPTN, TBK1, and NEK1
+
+```{r}
+targ <- c("FUS","TARDBP", "C9orf72",
+"SOD1", "OPTN", "TBK1", "NEK1", "ABCD1", "UNC13A")
+MND_genes.eRNA <- rmdups_eRNA[match(targ, rmdups_eRNA$external_gene_name), ]
+MND_genes.eRNA
+```
+
+```{r}
+MND_genes.pax <- rmdups_pax[match(targ, rmdups_pax$external_gene_name), ]
+MND_genes.pax
+```
+
+
+Overlapping genes between PAX and eRNA - 20.3k 
+```{r}
+overlap <- intersect(rmdups_eRNA$external_gene_name, rmdups_pax$external_gene_name)
+overlap <- as.data.frame(overlap)
+overlap
+colnames(overlap)[1] = "external_gene_name"
+
+```
+Overlapping read counts for PAX and eRNA 
+14615 overlapping protein coding genes for eRNA
+14616 overlapping protein coding genes for PAX
+
+```{r}
+overlap_eRNA <- merge(rmdups_eRNA, overlap, by = "external_gene_name")
+
+#overlapping protein coding genes 
+ol.eRNA <- overlap_eRNA  %>% arrange(desc(eRNA_total_count)) %>% filter(gene_biotype == "protein_coding")
+ol.eRNA
+```
+```{r}
+overlap_pax <- merge(rmdups_pax, overlap, by = "external_gene_name")
+overlap_pax %>% arrange(desc(pax_total_count)) %>% filter(gene_biotype == "protein_coding")
+```
+
+Find Uniques
+Unique PAX
+
+```{r}
+#Unique PAX genes df 
+unique_pax <- rmdups_pax %>% filter(!(external_gene_name %in% overlap$external_gene_name))
+unique_pax <- unique_pax %>% arrange(desc(pax_total_count))
+unique_pax %>% filter(gene_biotype =="protein_coding")
+
+```
+Find Unique eRNA genes 
+
+```{r}
+#Unique eRNA genes 
+unique_eRNA <- rmdups_eRNA %>% filter(!(external_gene_name %in% overlap$external_gene_name))
+unique_eRNA <- unique_eRNA %>% arrange(desc(eRNA_total_count))
+unique_eRNA %>% filter(gene_biotype=="protein_coding")
+```
+Show breakdown of each type - 
+20281 overlap
+1318 unique pax
+1087 unique eRNA
+
+```{r}
+#make vendiagram to show overlap
+ 
+ven <- draw.pairwise.venn(area1=15111, area2=14466,cross.area=14051, scaled=T, category=c("PAX","eRNA"),fill=c("Red","purple"))
+
+
+
+ven <- annotate_figure(ven, top = text_grob("Unique Overlapping Genes Between eRNA and PAX",
+               color = "black",, size = 14))
+ven
+```
+
+
+
+So there's a bit of a difference between genes that have reads that map between PAX and eRNA.
+Statistically significant - perform via t-test
+
+```{r}
+eRNA_total_counts <- log2(rmdups_eRNA$eRNA_total_count+1)
+pax_total_counts <-  log2(rmdups_pax$pax_total_count+1)
+
+A <- Boxplot <- boxplot(eRNA_total_counts, pax_total_counts,
+main = "Comparison between total sample counts",
+xlab="Samples",
+ylab="log2(counts+1)",
+names = c("eRNA", "PAX"),
+col = c("orange","red"),
+border = "brown",
+horizontal = F,
+notch = F
+)
+```
+
+```{r}
+test_counts <- t.test(eRNA_total_counts, pax_total_counts)
+test_counts
+```
+Statistically significant difference between the counts 
+
+Biotypes present in eRNA and PAX
+
+```{r}
+unique(merged_eRNA$gene_biotype)
+```
+Pie plot of eRNA sample composition 
+
+```{r}
+labels = c('Protein coding','Non-protein coding')
+
+values = c(15076, 6292)
+
+
+eRNA_pie <- plot_ly(type='pie', labels=labels, values=values, 
+               textinfo='label+percent',
+               insidetextorientation='radial')
+
+eRNA_pie %>% layout(title = 'Percentage of genes in eRNA sample')
+```
+```{r}
+labels = c('Protein coding','Non-protein coding')
+
+values = c(14937, 6661)
+
+
+eRNA_pie <- plot_ly(type='pie', labels=labels, values=values, 
+               textinfo='label+percent',
+               insidetextorientation='radial')
+
+eRNA_pie %>% layout(title = 'Percentage of genes in PAX sample')
+```
+
+
+
+```{r}
+#create sub dfs for plotting
+
+### eRNA ###
+
+#non protein coding
+sub_eRNA <- rmdups_eRNA 
+sub_eRNA <- drop_na(sub_eRNA)
+sub_eRNA
+#convert anything thats non-protein coding to a new title for plot 
+sub_eRNA$gene_biotype[sub_eRNA$gene_biotype != 'protein_coding'] <- 'non-protein_coding'
+
+
+plot1 <- ggplot(sub_eRNA, aes(x = gene_biotype )) +
+  geom_bar(horiz = TRUE, fill = "pink") 
+plot1 <- plot1 + coord_flip() + xlab("gene type") + ylab('no.eRNA genes') 
+
+### PAX ###
+
+#non protein coding
+sub_pax <- rmdups_pax 
+sub_pax <- drop_na(sub_pax)
+sub_eRNA %>% filter(gene_biotype == "non-protein_coding")
+#convert anything thats non-protein coding to a new title for plot 
+sub_pax$gene_biotype[sub_pax$gene_biotype != 'protein_coding'] <- 'non-protein_coding'
+  
+                               
+plot2 <- ggplot(sub_pax, aes(x = gene_biotype )) +
+  geom_bar(horiz = TRUE, fill = "blue")
+plot2 <- plot2 + coord_flip() + xlab("gene type") + ylab('no.PAX genes') 
+
+
+#A - eRNA, B - PAX
+plots <- ggarrange(plot1,plot2,
+          labels = c("I", "II"),
+          ncol = 1, nrow = 2)
+
+annotate.plots <- annotate_figure(plots, top = text_grob("Composition of Unique Genes in eRNA vs PAX Samples",
+               color = "black", size = 14))
+
+annotate.plots
+
+
+ggarrange(ven, annotate.plots, nrow =2, labels =c("A", "B"))
+
+```
+```{r}
+gene_test <- t.test(sub_eRNA$eRNA_total_count, sub_pax$pax_total_count)
+gene_test
+
+```
+
+
+```{r}
+
+norm_eRNA <- normalise[,7:12] %>% as.data.frame()
+
+
+norm_pax <- normalise[,1:6] %>% as.data.frame()
+```
+
+
+
+Check correlation matrix between pax and eRNA
+
+```{r}
+corr <- round(cor(normalise),2)
+melted_co <- melt(corr)
+
+co_heatmap <- ggplot(data = melted_co, aes(x=Var1, y=Var2, fill=value)) +
+ geom_tile(show.legend = FALSE) +
+  geom_text(aes(Var1, Var2, label = value), size = 5) + theme(panel.background = element_blank())
+  
+co_heatmap + labs(title = "Normalised Correlation between eRNA vs PAX Samples") +
+  xlab('y') + ylab('x') + theme(plot.title = element_text(hjust = 0.5)) 
+```
+```{r}
+plot(normalise$S1, normalise$S7)
+```
+
+
+```{r}
+corr_pax <- round(cor(norm_pax),2)
+corr_pax
+```
+Check gender based correlation - PAX
+
+```{r}
+#subset samples to check correlation between females vs males
+
+#male samples S2, S3, S5
+pax_males_df <- subset(norm_pax, select = -c(S1,S4,S6))
+
+#female samples S1, S4, S6
+pax_females_df <- subset(norm_pax, select = -c(S2,S3,S5))
+
+#melt corr matrix to make heatmap matrix
+pax_gender_cor <- round(cor(pax_males_df, pax_females_df),2)
+melted_cormat <- melt(pax_gender_cor)
+
+pax_heatmap <- ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) +
+ geom_tile(show.legend = FALSE) +
+  geom_text(aes(Var1, Var2, label = value), size = 5) + theme(panel.background = element_blank())
+  
+pax_heatmap + labs(title = "Normalised Correlation between Male vs Female PAX Samples") +
+  xlab('Male') + ylab('Female') + theme(plot.title = element_text(hjust = 0.5)) 
+```
+eRNA
+
+```{r}
+corr_eRNA <- round(cor(norm_eRNA),2)
+corr_eRNA
+```
+Check gender based correlation - eRNA
+
+```{r}
+#subset samples to check correlation between females vs males
+
+#male samples S8, S9, S11
+eRNA_males_df <- subset(norm_eRNA, select = -c(S7,S10,S12))
+
+#female samples S7, S10, S12
+eRNA_females_df <- subset(norm_eRNA, select = -c(S8,S9,S11))
+
+#melt corr matrix to make heatmap matrix
+eRNA_gender_cor <- round(cor(eRNA_males_df, eRNA_females_df),2)
+melted_cormat_eRNA <- melt(eRNA_gender_cor)
+
+eRNA_heatmap <- ggplot(data = melted_cormat_eRNA, aes(x=Var1, y=Var2, fill=value)) +
+ geom_tile(show.legend = FALSE) +
+  geom_text(aes(Var1, Var2, label = value), size = 5) + theme(panel.background = element_blank())
+  
+eRNA_heatmap + labs(title = "Normalised Correlation between Male vs Female eRNA Samples") +
+  xlab('Male') + ylab('Female') + theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+GO analysis - For genes that are different between PAX and eRNA
+
+```{r}
+
+#eRNA genes to test bio processes
+genes_eRNA <- unique_eRNA$ensembl_gene_id
+GO_eRNA <- enrichGO(gene = genes_eRNA, OrgDb = "org.Hs.eg.db", key = "ENSEMBL", ont = "ALL")
+as.data.frame(GO_eRNA)
+```
+Plot GO terms from eRNA
+
+```{r}
+eRNAplot <- dotplot(GO_eRNA, title="BP of Unique eRNA Genes") + facet_grid(ONTOLOGY ~ ., scales = "free")
+```
+
+
+```{r}
+#pax genes to test bio processes
+genes_pax <- unique_pax$ensembl_gene_id
+GO_pax <- enrichGO(gene = genes_pax, OrgDb = "org.Hs.eg.db", key = "ENSEMBL", ont = "BP")
+as.data.frame(GO_pax)
+```
+
+```{r}
+dotplot(GO_pax)
+```
+###Most variable genes 
+
+```{r}
+
+```
+
+
+```{r}
+#variable genes erRNA 
+norm_eRNA$var <- apply(norm_eRNA, 1, var)
+top.vareRNA <- norm_eRNA[order(norm_eRNA$var, decreasing=TRUE),] 
+```
+```{r}
+#variable genes PAX
+norm_pax$var <- apply(norm_pax, 1, var)
+top.varpax <- norm_pax[order(norm_pax$var, decreasing=TRUE),]
+```
+```{r}
+top.varpax
+top.vareRNA
+
+# Get the top 1000 of each
+a <- rownames(top.vareRNA[1:1000,])
+b <- rownames(top.varpax[1:1000,])
+
+# Top 1000 genes combined
+top.1000 <- unique(c(a,b))
+```
+```{r}
+vareRNA <- top.vareRNA[top.1000,]
+vareRNA
+vareRNA <- tibble::rownames_to_column(vareRNA , "ID")
+head(vareRNA )
+
+# FOr correlations later
+erna.var <- top.vareRNA[top.1000,]
+pax.var <- top.varpax[top.1000,]
+```
+
+```{r}
+vareRNA <- vareRNA  %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+head(vareRNA )
+```
+Get eRNA gene names 
+
+```{r}
+#get eRNA gene names 
+varernanames  <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = vareRNA$ensembl_gene_id,
+      mart = ensembl.con))
+head(varernanames)
+#merge names into eRNA gene df
+vareRNA <- merge(varernanames,vareRNA, by='ensembl_gene_id', all='TRUE')
+vareRNA <- vareRNA %>% arrange(desc(var)) %>% filter(gene_biotype == "protein_coding")
+```
+```{r}
+varpax <- top.varpax[top.1000,]
+varpax <- tibble::rownames_to_column(varpax , "ID")
+head(varpax)
+```
+```{r}
+varpax <- varpax  %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+head(varpax)
+```
+Get pax var gene names 
+
+```{r}
+#get eRNA gene names 
+varpaxnames  <- as.data.frame(getBM(attributes = c('ensembl_gene_id',"gene_biotype", 'external_gene_name'),
+      filters="ensembl_gene_id",
+      values = varpax$ensembl_gene_id,
+      mart = ensembl.con))
+head(varpaxnames )
+#merge names into eRNA gene df
+varpax <- merge(varpaxnames ,varpax, by='ensembl_gene_id', all='TRUE')
+varpax <- varpax%>% arrange(desc(var)) %>% filter(gene_biotype == "protein_coding")
+vareRNA
+```
+```{r}
+varpax
+```
+
+```{r}
+summary((varpax$external_gene_name == vareRNA$external_gene_name))
+
+```
+
+```{r}
+varpax_genes <- varpax[,4] %>% as.data.frame()
+colnames(varpax_genes)[1] <- "variable_genes"
+varpax_genes$rank_pax <- 1:683
+varpax_genes
+```
+```{r}
+vareRNA_genes <- vareRNA[,4] %>% as.data.frame()
+colnames(vareRNA_genes)[1] <- "variable_genes"
+vareRNA_genes$rank_eRNA <- 1:683
+vareRNA_genes
+```
+```{r}
+#arrange in in terms of most variable eRNA order
+rank_df <- merge(vareRNA_genes, varpax_genes, by = "variable_genes", all = "TRUE")
+rank_df <- rank_df %>% arrange(rank_eRNA)
+rank_df <- rank_df[1:1000,]
+rank_df
+```
+
+
+```{r}
+x<-cor.test(rank_df$rank_eRNA, rank_df$rank_pax, method = "kendall", use="pairwise")
+x
+```
+
+So there's a statistical sig lack of indepdence between eRNA and PAX rankings based on highly variable genes 
+
+```{r}
+pax_cor <- varpax[1:1000,4:10]
+eRNA_cor <-vareRNA[1:1000,4:10]
+pax_cor
+eRNA_cor
+```
+
+## Run correlations
+
+```{r}
+
+#transpose corr matrix 
+t_erna_cor <- t(erna.var) %>% as.data.frame()
+head(t_erna_cor, c(6,6))
+
+t_pax_cor <- t(pax.var) %>% as.data.frame()
+head(t_pax_cor, c(6,6))
+
+
+
+# Reorder
+sample.ids = c("S1"="S7", "S2"="S8", "S3"="S9", "S4"="S10", "S5"="S11", "S6"="S12")
+
+t_pax_cor <- t_pax_cor[names(sample.ids),]
+
+t_pax_cor <- t_pax_cor[,colnames(t_erna_cor)]
+
+t_erna_cor <- t_erna_cor[sample.ids,]
+
+# Check the sd
+a <- apply(t_erna_cor, 2, sd)
+length(which(a==0))
+
+t_erna_cor[,which(a==0)]
+
+# Run correaltions in apply
+A <- apply(t_pax_cor, 2, cor, y=t_erna_cor)
+```
+
+### Correlations
+
+#### Variation with all samples
+
+```{r}
+# Get the variance per gene and select the top 1000 most variable
+var.1000 <- normalise %>%
+  mutate(rowname=rownames(.)) %>%
+  rowwise %>%
+  mutate(Var = var(c_across(starts_with("S")))) %>%
+  ungroup() %>%
+  slice_max(Var,n=1000) %>%
+  dplyr::select(-Var) %>%
+  column_to_rownames("rowname") %>%
+  as.data.frame()
+
+
+dim(var.1000)
+
+test.erna <- var.1000[,paste0("S",7:12)]
+test.erna <- t(test.erna) %>% as.data.frame()
+head(test.erna, c(6,6))
+
+test.pax <- var.1000[,paste0("S",1:6)]
+test.pax <- t(test.pax) %>% as.data.frame()
+head(test.pax, c(6,6))
+
+a <- lapply(colnames(test.erna), function(x)
+  {
+   b <- cor.test(test.erna[,x], test.pax[,x])
+    b$estimate
+})
+
+names(a) <- colnames(test.erna)
+
+test.cors <- do.call(rbind, a)
+test.cors <- as.data.frame(test.cors)
+test.cors
+```
+
+
+```{r}
+# Plot
+
+test.cors %>%
+  ggplot(aes(x=cor)) +
+  geom_density() +
+  ggtitle("Variation across all samples of PAX and eRNA") +
+  labs(caption= "Variation calculated within pax/erna groups", subtitle=paste("Top", nrow(test.cors), "most variable normalised genes"))
+
+
+hist(test.cors$cor, breaks = 100)
+```
+
+
+#### Variation within tube type
+
+```{r}
+# Get the variance per gene and select the top 1000 most variable
+v2.1000 <- normalise %>%
+  mutate(rowname=rownames(.)) %>%
+  rowwise %>%
+  mutate(Varpax = var(c_across(cols=paste0("S",1:6)))) %>%
+  mutate(Varerna = var(c_across(cols=paste0("S",7:12)))) %>%
+  ungroup() %>%
+  arrange(desc(Varpax)) %>%
+  mutate(orderpax = 1:n()) %>%
+  arrange(desc(Varerna)) %>%
+  mutate(ordererna = 1:n()) %>%
+  dplyr::filter(orderpax %in% c(1:1000) | ordererna %in% c(1:1000)) %>%
+  column_to_rownames("rowname") %>%
+  dplyr::select(starts_with("S")) %>%
+  as.data.frame()
+
+
+
+dim(v2.1000)
+
+test.erna2 <- v2.1000[,paste0("S",7:12)]
+test.erna2 <- t(test.erna2) %>% as.data.frame()
+head(test.erna2, c(6,6))
+
+test.pax2 <- v2.1000[,paste0("S",1:6)]
+test.pax2 <- t(test.pax2) %>% as.data.frame()
+head(test.pax2, c(6,6))
+
+a <- lapply(colnames(test.erna2), function(x)
+  {
+   b <- cor.test(test.erna2[,x], test.pax2[,x])
+   M <- mean(c(as.numeric(test.erna2[,x]), as.numeric(test.pax2[,x])))
+    c(b$estimate, "mean"=M)
+})
+
+names(a) <- colnames(test.erna2)
+
+test.cors2 <- do.call(rbind, a)
+test.cors2 <- as.data.frame(test.cors2)
+head(test.cors2)
+```
+
+
+```{r}
+# Plot
+
+test.cors2 %>%
+  ggplot(aes(x=cor)) +
+  geom_density() +
+  ggtitle("paired correlation between pax and erna") +
+  labs(caption= "Variation calculated within pax/erna groups", subtitle=paste("Top", nrow(test.cors2), "most variable normalised genes"))
+
+       
+test.cors2 %>%
+  ggplot(aes(y=cor, x=mean)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  ggtitle("paired correlation between pax and erna") +
+  labs(caption= "Variation calculated within pax/erna groups", subtitle=paste("Top", nrow(test.cors2), "most variable normalised genes"))
+
+
+```
+
+### Most heritable genes corr from CAGE
+
+
+
+```{r}
+#top 1000 heritable genes from CAGE EQTL 
+h_genes <- read.table("h_genes.txt")
+colnames(h_genes) <- h_genes[1,]
+h_genes %>% as.data.frame()
+h_genes = h_genes[-1,]
+top.1000.h_genes <- h_genes[1:2000,]
+top.1000.h_genes
+```
+#Get ensembl ID for genes
+```{r}
+#get ensembl ids for h-genes 
+h_gene_ids <- as.data.frame(getBM(attributes = c('ensembl_gene_id', 'external_gene_name'),
+      filters="external_gene_name",
+      values = top.1000.h_genes$GENE,
+      mart = ensembl.con))
+
+#filt dup ids 
+#filt_h_genes <- h_gene_ids[!duplicated(h_gene_ids$external_gene_name),]
+h_gene_ids
+```
+#get gene ids for norm df
+
+```{r}
+norm_gene_ids <- tibble::rownames_to_column(normalise , "ID")
+norm_genes_ids <- norm_gene_ids  %>% mutate(ensembl_gene_id = gsub("\\..*","", ID))
+
+#filt ids that overlap between dfs
+f2 <- norm_genes_ids %>% filter(ensembl_gene_id %in% h_gene_ids$ensembl_gene_id)
+
+rownames(f2) <- f2[,1]
+#match ids to get gene names
+idx <- match(f2$ensembl_gene_id, h_gene_ids$ensembl_gene_id)
+f2$GENE <- h_gene_ids$external_gene_name[idx]
+
+#get overlap index of genes to get h ratio
+idx2 <- match(f2$GENE, top.1000.h_genes$GENE)
+f2$h2 <- top.1000.h_genes$H2[idx2]
+
+#filt descend for h and get top 1000
+h1000_genes <- f2 %>% arrange(desc(h2))
+h1000_genes <- h1000_genes[1:1000,]
+h1000_genes
+```
+
+## get corr between top 1000 h genes
+
+```{r}
+# Get the variance per gene and select the top 1000 most heritable genes based on CAGE
+var.1000_h <- h1000_genes %>%
+  mutate(rowname=rownames(.)) %>%
+  rowwise %>%
+  mutate(Var = var(c_across(starts_with("S")))) %>%
+  ungroup() %>%
+  dplyr::select(-Var) %>%
+  column_to_rownames("rowname") %>%
+  as.data.frame()
+
+
+dim(var.1000_h)
+
+test.erna_h <- var.1000_h[,paste0("S",7:12)]
+test.erna_h<- t(test.erna_h) %>% as.data.frame()
+head(test.erna_h, c(6,6))
+
+test.pax_h <- var.1000_h[,paste0("S",1:6)]
+test.pax_h <- t(test.pax_h) %>% as.data.frame()
+head(test.pax_h, c(6,6))
+
+a_h <- lapply(colnames(test.erna_h), function(k)
+  {
+   b_h <- cor.test(test.erna_h[,k], test.pax_h[,k])
+    b_h$estimate
+})
+
+names(a_h) <- colnames(test.erna_h)
+
+test.cors_h <- do.call(rbind, a_h)
+test.cors_h <- as.data.frame(test.cors_h)
+test.cors_h
+```
+```{r}
+#no. genes with corr > 0.8 out of top 1000 h-genes
+nrow(test.cors_h %>% filter(cor > 0.8))
+```
+
+232 genes have a correlation > 0.8
+
+
+```{r}
+
+h_plot <- ggplot(test.cors_h, aes(cor)) +
+  geom_histogram(color="darkblue", fill="lightblue", bins=100) + 
+  theme_minimal() +
+  labs(x = "correlation") +
+  labs(caption= "Variation calculated within pax/erna groups") +
+  ggtitle("Correlation of Top 1000 Most Heritable CAGE Genes Between PAX and eRNA") 
+h_plot
+```
+```{r}
+v_plot <- ggplot(test.cors, aes(cor)) +
+  geom_histogram(aes(y = ..density..), bins=100) + 
+  geom_density() +
+  theme_minimal() +
+  labs(x = "correlation", y = "density") +
+  labs(caption= "Variation calculated within pax/erna groups", subtitle=paste("Top", nrow(test.cors2), "most variable normalised genes")) +
+  ggtitle("Correlation of Top Variable Genes Between PAX and eRNA") 
+
+v_plot
+```
+
+
