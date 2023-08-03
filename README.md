@@ -1,6 +1,6 @@
 # BioInformaticProjects
 
-A repo where I have uploaded my bioinformatics research projects as pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Copyright Jayden Beckwith (and UQ IMB) 2022-2023. Code is property of IMB and performed on HPC as some of the used code is still being actively used on other projects
+A repo where I have uploaded my bioinformatics research projects as pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Copyright Jayden Beckwith (and UQ IMB) 2022-2023. Most code was performed in Jupyter notebook and R markdown with some parts performed on HPC
 
 Project 1 - Understanding the Mechanism of ALS through RNA Sequencing 
 
