@@ -1,6 +1,6 @@
 # BioInformaticProjects
 
-A repo where I have uploaded my bioinformatics research projects with the pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Most code was performed in R markdown and Jupyter notebook with some parts performed on HPC Unix/R
+A repo where I have uploaded my bioinformatics research projects with the pdf papers I completed at the Institute for Molecular Bioscience (2022-2023), University of Queensland. Most code was performed in R markdown and Jupyter notebook with some parts performed on HPC Unix/R using SLURM job processing management for the pipelines. 
 
 Project 1 - Understanding the Mechanism of ALS through RNA Sequencing 
 
